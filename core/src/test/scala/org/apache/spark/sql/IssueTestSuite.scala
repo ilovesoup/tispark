@@ -21,6 +21,36 @@ import org.apache.spark.sql.functions.{col, sum}
 
 class IssueTestSuite extends BaseTiSparkTest {
 
+  test("???") {
+    tidbStmt.execute("drop table if exists t1")
+    tidbStmt.execute(
+      """
+        |CREATE TABLE `t1` (
+        |  `tzzt` varchar(100) DEFAULT NULL COMMENT '台账主题',
+        |  `wqzy` varchar(100) DEFAULT NULL COMMENT '外渠/自营',
+        |  `qdtx` varchar(100) DEFAULT NULL COMMENT '渠道体系',
+        |  `qdmc` varchar(100) DEFAULT NULL COMMENT '渠道名称',
+        |  `jrbh` varchar(100) NOT NULL COMMENT '金融编号',
+        |  `partition_flag` int(10) NOT NULL COMMENT 'partition_flag',
+        |  `data_date` date NOT NULL COMMENT '数据日期',
+        |  PRIMARY KEY (`jrbh`,`data_date`,`partition_flag`)
+        |) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin COMMENT='京外运营明细_快照表'
+        |PARTITION BY RANGE ( `partition_flag` ) (
+        |  PARTITION `p1` VALUES LESS THAN (2),
+        |  PARTITION `p2` VALUES LESS THAN (3),
+        |  PARTITION `p3` VALUES LESS THAN (4),
+        |  PARTITION `p4` VALUES LESS THAN (5),
+        |  PARTITION `p5` VALUES LESS THAN (6),
+        |  PARTITION `p6` VALUES LESS THAN (7)
+        |  )""".stripMargin)
+    tidbStmt.execute(
+      "insert into t1(jrbh,data_date,partition_flag) values('a','2000-01-01',2),('b','2000-01-01',3),('b','2000-01-02',3)")
+    tidbStmt.execute(
+      "insert into t1(jrbh,data_date,partition_flag) values('a','2000-01-01',4),('b','2000-01-01',5),('b','2000-01-02',6)")
+    spark.sql("select * from t1").explain
+    spark.sql("select * from t1").show
+  }
+
   test("partition table with date partition column name") {
     tidbStmt.execute("drop table if exists t1")
     tidbStmt.execute("""

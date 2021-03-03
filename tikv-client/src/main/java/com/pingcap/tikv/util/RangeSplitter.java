@@ -39,6 +39,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.tikv.kvproto.Coprocessor.KeyRange;
 import org.tikv.kvproto.Metapb;
+import org.tikv.kvproto.Metapb.Store;
 
 public class RangeSplitter {
   private final RegionManager regionManager;
@@ -169,62 +170,35 @@ public class RangeSplitter {
       return ImmutableList.of();
     }
 
-    int i = 0;
-    KeyRange range = keyRanges.get(i++);
-    Map<Long, List<KeyRange>> idToRange = new HashMap<>(); // region id to keyRange list
-    Map<Long, Pair<TiRegion, Metapb.Store>> idToRegion = new HashMap<>();
+    Map<Pair<TiRegion, Store>, List<KeyRange>> regionStorePairToRange = new HashMap<>();
+    for (KeyRange keyRange : keyRanges) {
+      ByteString startKey = keyRange.getStart();
+      ByteString endKey = keyRange.getEnd();
 
-    while (true) {
-      Pair<TiRegion, Metapb.Store> regionStorePair = null;
-
-      BackOffer bo = ConcreteBackOffer.newGetBackOff();
-      while (regionStorePair == null) {
-        try {
-          regionStorePair = regionManager.getRegionStorePairByKey(range.getStart(), storeType, bo);
-
-          if (regionStorePair == null) {
-            throw new NullPointerException(
-                "fail to get region/store pair by key " + formatByteString(range.getStart()));
-          }
-        } catch (Exception e) {
-          LOG.warn("getRegionStorePairByKey error", e);
-          bo.doBackOff(BackOffFunction.BackOffFuncType.BoRegionMiss, e);
+      while (FastByteComparisons.compareTo(startKey.toByteArray(), endKey.toByteArray()) < 0) {
+        Pair<TiRegion, Store> regionStorePair =
+            regionManager.getRegionStorePairByKey(startKey, storeType);
+        TiRegion region = regionStorePair.first;
+        ByteString regionEndKey = region.getEndKey();
+        // both key range is close-opened
+        // initial range inside PD is guaranteed to be -INF to +INF
+        // Both keys are at right hand side and then always not -INF
+        ByteString rangeEndKey;
+        if (toRawKey(endKey).compareTo(toRawKey(regionEndKey)) > 0) {
+          // current region does not cover current end key
+          rangeEndKey = regionEndKey;
+        } else {
+          rangeEndKey = endKey;
         }
-      }
-
-      TiRegion region = regionStorePair.first;
-      idToRegion.putIfAbsent(region.getId(), regionStorePair);
-
-      // both key range is close-opened
-      // initial range inside PD is guaranteed to be -INF to +INF
-      // Both keys are at right hand side and then always not -INF
-      if (toRawKey(range.getEnd()).compareTo(toRawKey(region.getEndKey())) > 0) {
-        // current region does not cover current end key
-        KeyRange cutRange =
-            KeyRange.newBuilder().setStart(range.getStart()).setEnd(region.getEndKey()).build();
-
-        List<KeyRange> ranges = idToRange.computeIfAbsent(region.getId(), k -> new ArrayList<>());
-        ranges.add(cutRange);
-
-        // cut new remaining for current range
-        range = KeyRange.newBuilder().setStart(region.getEndKey()).setEnd(range.getEnd()).build();
-      } else {
-        // current range covered by region
-        List<KeyRange> ranges = idToRange.computeIfAbsent(region.getId(), k -> new ArrayList<>());
-        ranges.add(range);
-        if (i >= keyRanges.size()) {
-          break;
-        }
-        range = keyRanges.get(i++);
+        regionStorePairToRange
+            .computeIfAbsent(regionStorePair, k -> new ArrayList<>())
+            .add(KeyRange.newBuilder().setStart(startKey).setEnd(rangeEndKey).build());
+        startKey = toRawKey(regionEndKey).nextPrefix().toByteString();
       }
     }
-
     ImmutableList.Builder<RegionTask> resultBuilder = ImmutableList.builder();
-    idToRange.forEach(
-        (k, v) -> {
-          Pair<TiRegion, Metapb.Store> regionStorePair = idToRegion.get(k);
-          resultBuilder.add(new RegionTask(regionStorePair.first, regionStorePair.second, v));
-        });
+    regionStorePairToRange.forEach(
+        (k, v) -> resultBuilder.add(new RegionTask(k.first, k.second, v)));
     return resultBuilder.build();
   }
 
